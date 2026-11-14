@@ -1,6 +1,19 @@
 const TIMEOUT_MS = 10000;
 const SINGLETON = Symbol.for('ember-bridge.forwarder');
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+function isAllowedUrl(value) {
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch {
+        return false;
+    }
+    if (parsed.protocol === 'https:') return true;
+    return parsed.protocol === 'http:' && LOCAL_HOSTS.has(parsed.hostname);
+}
+
 /**
  * Build a handler that forwards human messages in watched channels/threads
  * to Ember's webhook. Fails safe: errors are logged and dropped.
@@ -8,17 +21,28 @@ const SINGLETON = Symbol.for('ember-bridge.forwarder');
 export function createEmberForwarder({ fetch, env, logger = console }) {
     const url = env.EMBER_WEBHOOK_URL;
     const secret = env.EMBER_WEBHOOK_SECRET;
-    const enabled = Boolean(url && secret);
+    let enabled = Boolean(url && secret);
 
     if (!enabled) {
         logger.warn(
             '[ember] EMBER_WEBHOOK_URL or EMBER_WEBHOOK_SECRET is not set; forwarding disabled',
+        );
+    } else if (!isAllowedUrl(url)) {
+        enabled = false;
+        logger.warn(
+            '[ember] EMBER_WEBHOOK_URL must be https (or http to localhost); forwarding disabled',
         );
     }
 
     const ids = new Set(
         [env.HELP_CHANNEL_ID, env.BUGREPORT_CHANNEL_ID].filter(Boolean),
     );
+
+    if (enabled && ids.size === 0) {
+        logger.warn(
+            '[ember] neither HELP_CHANNEL_ID nor BUGREPORT_CHANNEL_ID is set; no messages will be forwarded',
+        );
+    }
 
     const isWatched = (channel) =>
         ids.has(channel.id) ||
@@ -27,7 +51,7 @@ export function createEmberForwarder({ fetch, env, logger = console }) {
     return async (message) => {
         try {
             if (!enabled) return;
-            if (message.author.bot) return;
+            if (message.author.bot || message.system) return;
             if (!isWatched(message.channel)) return;
             if (!message.content) return;
 
@@ -50,6 +74,8 @@ export function createEmberForwarder({ fetch, env, logger = console }) {
                 }),
                 signal: AbortSignal.timeout(TIMEOUT_MS),
             });
+
+            await res.body?.cancel().catch(() => {});
 
             if (!res.ok) {
                 logger.error(

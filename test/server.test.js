@@ -117,6 +117,13 @@ test('S12 S21 valid request sends once with allowedMentions and returns id', asy
   assert.deepEqual(channel.sent, [{ content: 'hi', allowedMentions: { parse: ['users'] } }]);
 });
 
+test('S12 Bearer scheme is matched case-insensitively', async () => {
+  const channel = makeChannel();
+  const { base } = await boot({ client: makeClient(channel) });
+  const res = await post(base, { channelId: 'c1', message: 'hi' }, { authorization: 'bearer topsecret' });
+  assert.equal(res.status, 200);
+});
+
 for (const [name, headers] of [
   ['missing header', {}],
   ['non-Bearer scheme', { authorization: 'Basic topsecret' }],
