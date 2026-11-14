@@ -7,8 +7,7 @@ const SECRET = 'super-secret-value';
 const env = {
     EMBER_WEBHOOK_URL: URL_,
     EMBER_WEBHOOK_SECRET: SECRET,
-    HELP_CHANNEL_ID: 'help1',
-    BUGREPORT_CHANNEL_ID: 'bug1',
+    CHANNEL_IDS: 'help1,bug1',
 };
 
 function setup(envOverride = env, fetchImpl) {
@@ -119,7 +118,7 @@ test('S9 unrelated channel and thread under unrelated parent are not forwarded',
 });
 
 test('S9 unset channel ids never match an empty channel id', async () => {
-    const { forward, calls } = setup({ EMBER_WEBHOOK_URL: URL_, EMBER_WEBHOOK_SECRET: SECRET, HELP_CHANNEL_ID: '' });
+    const { forward, calls } = setup({ EMBER_WEBHOOK_URL: URL_, EMBER_WEBHOOK_SECRET: SECRET, CHANNEL_IDS: '' });
     const m = msg();
     m.channel = { ...m.channel, id: '', parentId: undefined };
     await forward(m);
@@ -191,10 +190,28 @@ test('system message in a watched channel is not forwarded', async () => {
 });
 
 test('webhook configured but no channel ids set warns once at creation', () => {
-    const { logs } = setup({ ...env, HELP_CHANNEL_ID: '', BUGREPORT_CHANNEL_ID: undefined });
-    assert.equal(logs.warn.length, 1);
-    assert.match(logs.warn[0], /HELP_CHANNEL_ID/);
-    assert.ok(!all(logs).includes(SECRET));
+    for (const value of [undefined, '', ' , ,']) {
+        const { logs } = setup({ ...env, CHANNEL_IDS: value });
+        assert.equal(logs.warn.length, 1);
+        assert.match(logs.warn[0], /CHANNEL_IDS/);
+        assert.ok(!all(logs).includes(SECRET));
+    }
+});
+
+test('S25 CHANNEL_IDS is trimmed and empty entries ignored', async () => {
+    const { forward, calls } = setup({ ...env, CHANNEL_IDS: ' a , b,,c ' });
+    const inB = msg();
+    inB.channel = { ...inB.channel, id: 'b', parentId: undefined };
+    await forward(inB);
+    assert.equal(calls.length, 1);
+    const inThread = msg();
+    inThread.channel = { ...inThread.channel, id: 't1', parentId: 'c', isThread: () => true };
+    await forward(inThread);
+    assert.equal(calls.length, 2);
+    const inD = msg();
+    inD.channel = { ...inD.channel, id: 'd', parentId: undefined };
+    await forward(inD);
+    assert.equal(calls.length, 2);
 });
 
 test('response body is released on 2xx and non-2xx', async () => {

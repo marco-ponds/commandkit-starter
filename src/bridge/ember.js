@@ -35,12 +35,15 @@ export function createEmberForwarder({ fetch, env, logger = console }) {
     }
 
     const ids = new Set(
-        [env.HELP_CHANNEL_ID, env.BUGREPORT_CHANNEL_ID].filter(Boolean),
+        (env.CHANNEL_IDS ?? '')
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean),
     );
 
     if (enabled && ids.size === 0) {
         logger.warn(
-            '[ember] neither HELP_CHANNEL_ID nor BUGREPORT_CHANNEL_ID is set; no messages will be forwarded',
+            '[ember] CHANNEL_IDS is unset or empty; no messages will be forwarded',
         );
     }
 
