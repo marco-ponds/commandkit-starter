@@ -6,7 +6,7 @@ const MAX_MESSAGE_LENGTH = 2000;
 let server = null;
 
 export function resolvePort(env) {
-  return Number(env.PORT) || 3000;
+  return env.PORT === undefined || env.PORT === '' ? 3000 : Number(env.PORT);
 }
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest();

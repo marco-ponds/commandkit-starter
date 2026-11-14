@@ -69,14 +69,30 @@ test('S2 startServer serves /health on PORT and is idempotent', async () => {
   const b = startServer({ client, env: { PORT: '0' }, logger });
   servers.push(a);
   assert.equal(a, b);
-  if (!a.listening) await new Promise((r) => a.once('listening', r));
-  const res = await fetch(`http://127.0.0.1:${a.address().port}/health`);
+  if (!a.listening) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('listen timeout')), 5000);
+      a.once('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      a.once('listening', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+  const port = a.address().port;
+  assert.notEqual(port, 3000);
+  const res = await fetch(`http://127.0.0.1:${port}/health`);
   assert.equal(res.status, 200);
 });
 
 test('S2 PORT unset resolves to 3000 without binding it', () => {
   assert.equal(resolvePort({}), 3000);
-  assert.equal(resolvePort({ PORT: '8080' }), 8080);
+  assert.equal(resolvePort({ PORT: '' }), 3000);
+  assert.equal(resolvePort({ PORT: '0' }), 0);
+  assert.equal(resolvePort({ PORT: '4567' }), 4567);
 });
 
 test('S4 one log line per request with method, path, status, duration; no secret', async () => {
