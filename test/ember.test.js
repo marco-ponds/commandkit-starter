@@ -184,6 +184,51 @@ test('S11 missing URL or secret warns once at creation and never fetches', async
     }
 });
 
+test('system message in a watched channel is not forwarded', async () => {
+    const { forward, calls } = setup();
+    await forward(msg({ system: true }));
+    assert.equal(calls.length, 0);
+});
+
+test('webhook configured but no channel ids set warns once at creation', () => {
+    const { logs } = setup({ ...env, HELP_CHANNEL_ID: '', BUGREPORT_CHANNEL_ID: undefined });
+    assert.equal(logs.warn.length, 1);
+    assert.match(logs.warn[0], /HELP_CHANNEL_ID/);
+    assert.ok(!all(logs).includes(SECRET));
+});
+
+test('response body is released on 2xx and non-2xx', async () => {
+    for (const status of [200, 500]) {
+        let cancelled = 0;
+        const { forward } = setup(env, () => ({
+            ok: status < 400,
+            status,
+            body: { cancel: async () => { cancelled++; } },
+        }));
+        await forward(msg());
+        assert.equal(cancelled, 1);
+    }
+});
+
+test('non-https non-local webhook URL disables forwarding with one warning', async () => {
+    for (const bad of ['http://example.com/hook', 'not a url']) {
+        const { forward, calls, logs } = setup({ ...env, EMBER_WEBHOOK_URL: bad });
+        assert.equal(logs.warn.length, 1);
+        assert.ok(!all(logs).includes(SECRET));
+        await forward(msg());
+        assert.equal(calls.length, 0);
+    }
+});
+
+test('http webhook URL to localhost is allowed', async () => {
+    for (const ok of ['http://localhost:9999/hook', 'http://127.0.0.1:9999/hook', 'http://[::1]:9999/hook']) {
+        const { forward, calls, logs } = setup({ ...env, EMBER_WEBHOOK_URL: ok });
+        assert.equal(logs.warn.length, 0);
+        await forward(msg());
+        assert.equal(calls.length, 1);
+    }
+});
+
 test('S23 empty content is not forwarded', async () => {
     const { forward, calls } = setup();
     await forward(msg({ content: '' }));

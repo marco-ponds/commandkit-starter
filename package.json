@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "main": "dist/index.js",
   "scripts": {
     "dev": "commandkit dev",

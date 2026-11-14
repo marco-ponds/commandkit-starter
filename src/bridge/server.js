@@ -40,7 +40,7 @@ export function createApp({ client, env, logger }) {
   };
 
   const requireBearer = (req, res, next) => {
-    const match = /^Bearer (.+)$/.exec(req.get('authorization') ?? '');
+    const match = /^Bearer (.+)$/i.exec(req.get('authorization') ?? '');
     if (!match || !isValidToken(match[1], env.SEND_API_SECRET)) {
       return res.status(401).json({ error: 'invalid_token' });
     }
