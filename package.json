@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "commandkit dev",
     "build": "commandkit build",
-    "start": "commandkit start"
+    "start": "commandkit start",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
@@ -17,6 +18,7 @@
   "dependencies": {
     "commandkit": "^1.2.6",
     "discord.js": "^14.27.0",
+    "express": "^5.3.0",
     "pretty-ms": "^10.0.0"
   }
 }
