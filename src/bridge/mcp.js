@@ -27,7 +27,9 @@ const readSchema = z.object({
 const sendShape = {
     channelId: z
         .string()
-        .describe(`ID of the Discord channel or thread to post in, ${ID_FORMAT}.`),
+        .describe(
+            `ID of a watched channel, or of a thread under a watched channel, to post in, ${ID_FORMAT}.`,
+        ),
     message: z
         .string()
         .describe(
@@ -53,7 +55,7 @@ const HINTS = {
     not_ready: 'The Discord client is not ready yet; retry shortly.',
     channel_not_found: 'The channel could not be fetched; check the channel ID.',
     channel_not_allowed:
-        'This channel is not watched; only watched channels and their threads can be read.',
+        'This channel is not watched; only watched channels and their threads can be used.',
     channel_not_sendable: 'The channel does not support sending messages.',
     channel_not_readable: 'The channel does not support reading messages.',
     missing_permission:
@@ -83,6 +85,15 @@ function discordFail(err, logger, tool) {
     return fail(code);
 }
 
+/** A channel is watched if it is in CHANNEL_IDS or is a thread under one. */
+function isWatched(channel, env) {
+    const ids = parseChannelIds(env?.CHANNEL_IDS);
+    return (
+        ids.has(channel.id) ||
+        Boolean(channel.isThread?.() && ids.has(channel.parentId))
+    );
+}
+
 async function fetchChannel(client, channelId, logger, tool) {
     try {
         return (await client.channels.fetch(channelId)) ?? null;
@@ -92,7 +103,7 @@ async function fetchChannel(client, channelId, logger, tool) {
     }
 }
 
-export async function sendDiscordMessage(args, { client, logger = console }) {
+export async function sendDiscordMessage(args, { client, env, logger = console }) {
     const parsed = sendSchema.safeParse(args);
     if (!parsed.success) return fail('invalid_input');
     const { channelId, message } = parsed.data;
@@ -106,6 +117,7 @@ export async function sendDiscordMessage(args, { client, logger = console }) {
         'send_discord_message',
     );
     if (!channel) return fail('channel_not_found');
+    if (!isWatched(channel, env)) return fail('channel_not_allowed');
     if (!channel.isTextBased?.() || typeof channel.send !== 'function') {
         return fail('channel_not_sendable');
     }
@@ -136,11 +148,7 @@ export async function getRecentMessages(args, { client, env, logger = console })
     );
     if (!channel) return fail('channel_not_found');
 
-    const ids = parseChannelIds(env.CHANNEL_IDS);
-    const allowed =
-        ids.has(channel.id) ||
-        Boolean(channel.isThread?.() && ids.has(channel.parentId));
-    if (!allowed) return fail('channel_not_allowed');
+    if (!isWatched(channel, env)) return fail('channel_not_allowed');
 
     if (typeof channel.messages?.fetch !== 'function') {
         return fail('channel_not_readable');
@@ -180,7 +188,7 @@ export function buildMcpServer({ client, env, logger = console }) {
         'send_discord_message',
         {
             description:
-                'Post a message to a Discord channel or thread the bot can see. Plain Discord markdown, at most 2000 characters. Mention users as <@userId>; only user mentions ping (no @everyone or roles). Returns { messageId, url }.',
+                'Post a message to a watched Discord channel (or a thread under one); other channels are refused. Plain Discord markdown, at most 2000 characters. Mention users as <@userId>; only user mentions ping (no @everyone or roles). Returns { messageId, url }.',
             inputSchema: sendShape,
         },
         (args) => sendDiscordMessage(args, deps),

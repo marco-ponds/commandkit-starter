@@ -16,6 +16,7 @@ function makeLogger() {
 function makeChannel(over = {}) {
   const sent = [];
   return {
+    id: C1,
     sent,
     isTextBased: () => true,
     send: async (m) => {
@@ -43,7 +44,7 @@ function makeClient(channel, { ready = true, fetchImpl } = {}) {
 }
 
 const servers = [];
-async function boot({ client, env = { SEND_API_SECRET: 'topsecret' }, logger = makeLogger() } = {}) {
+async function boot({ client, env = { SEND_API_SECRET: 'topsecret', CHANNEL_IDS: C1 }, logger = makeLogger() } = {}) {
   const app = createApp({ client, env, logger });
   const server = http.createServer(app);
   await new Promise((r) => server.listen(0, r));

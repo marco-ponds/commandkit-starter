@@ -124,6 +124,40 @@ test('S5 send posts with allowedMentions and returns messageId/url', async () =>
   await close();
 });
 
+test('send to a channel that is not watched is channel_not_allowed and sends nothing', async () => {
+  const channel = makeChannel({ id: OTHER });
+  const res = await sendDiscordMessage(
+    { channelId: OTHER, message: 'hi' },
+    { client: makeClient(channel), env: { CHANNEL_IDS: C1 }, logger: makeLogger() },
+  );
+  assert.equal(res.isError, true);
+  assert.equal(parse(res).code, 'channel_not_allowed');
+  const { mcp, close } = await connect({ client: makeClient(channel) });
+  const over = await send(mcp, { channelId: OTHER, message: 'hi' });
+  assert.equal(parse(over).code, 'channel_not_allowed');
+  await close();
+  assert.equal(channel.sent.length, 0);
+});
+
+test('send with CHANNEL_IDS unset is channel_not_allowed', async () => {
+  const channel = makeChannel();
+  const res = await sendDiscordMessage(
+    { channelId: C1, message: 'hi' },
+    { client: makeClient(channel), env: {}, logger: makeLogger() },
+  );
+  assert.equal(parse(res).code, 'channel_not_allowed');
+  assert.equal(channel.sent.length, 0);
+});
+
+test('send to a thread under a watched channel is allowed', async () => {
+  const thread = makeChannel({ id: T1, isThread: () => true, parentId: C1 });
+  const { mcp, close } = await connect({ client: makeClient(thread) });
+  const res = await send(mcp, { channelId: T1, message: 'hi' });
+  assert.ok(!res.isError);
+  assert.equal(thread.sent.length, 1);
+  await close();
+});
+
 test('S6 invalid send input returns invalid_input and sends nothing', async () => {
   const channel = makeChannel();
   const deps = { client: makeClient(channel), env: {}, logger: makeLogger() };
