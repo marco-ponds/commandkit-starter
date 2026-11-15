@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import express from 'express';
-
-const MAX_MESSAGE_LENGTH = 2000;
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { buildMcpServer } from './mcp.js';
 
 let server = null;
 
@@ -47,42 +47,40 @@ export function createApp({ client, env, logger }) {
     next();
   };
 
-  app.post('/send', requireSecret, requireBearer, express.json(), async (req, res) => {
-    const { channelId, message } = req.body ?? {};
-    if (typeof channelId !== 'string' || !channelId || typeof message !== 'string' || !message) {
-      return res.status(400).json({ error: 'invalid_body' });
-    }
-    if (message.length > MAX_MESSAGE_LENGTH) {
-      return res.status(400).json({ error: 'message_too_long' });
-    }
-    if (!client.isReady()) {
-      return res.status(503).json({ error: 'not_ready' });
-    }
-
-    let channel;
+  app.post('/mcp', requireSecret, requireBearer, express.json(), async (req, res) => {
+    const mcp = buildMcpServer({ client, env, logger });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    res.on('close', () => {
+      transport.close();
+      mcp.close();
+    });
     try {
-      channel = await client.channels.fetch(channelId);
-    } catch {
-      channel = null;
-    }
-    if (!channel) {
-      return res.status(404).json({ error: 'channel_not_found' });
-    }
-    if (!channel.isTextBased?.() || typeof channel.send !== 'function') {
-      return res.status(422).json({ error: 'channel_not_sendable' });
-    }
-
-    try {
-      const sent = await channel.send({
-        content: message,
-        allowedMentions: { parse: ['users'] },
-      });
-      return res.status(200).json({ id: sent.id });
+      await mcp.connect(transport);
+      await transport.handleRequest(req, res, req.body);
     } catch (err) {
-      logger.error(`[http] send failed: ${err?.message}`);
-      return res.status(502).json({ error: 'discord_error' });
+      logger.error(`[http] mcp request failed: ${err?.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
     }
   });
+
+  const methodNotAllowed = (req, res) => {
+    res.set('Allow', 'POST').status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed.' },
+      id: null,
+    });
+  };
+  app.get('/mcp', requireSecret, requireBearer, methodNotAllowed);
+  app.delete('/mcp', requireSecret, requireBearer, methodNotAllowed);
 
   // Body-parser errors (malformed JSON, oversized body) are client errors.
   // eslint-disable-next-line no-unused-vars

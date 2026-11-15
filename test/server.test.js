@@ -1,6 +1,8 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApp, startServer, resolvePort } from '../src/bridge/server.js';
 
 function makeLogger() {
@@ -46,23 +48,61 @@ async function boot({ client, env = { SEND_API_SECRET: 'topsecret' }, logger = m
   servers.push(server);
   return { base: `http://127.0.0.1:${server.address().port}`, logger };
 }
-after(() => Promise.all(servers.map((s) => new Promise((r) => s.close(r)))));
+after(() =>
+  Promise.all(
+    servers.map((s) =>
+      new Promise((r) => {
+        s.close(r);
+        s.closeAllConnections?.();
+      }),
+    ),
+  ),
+);
 
-const post = (base, body, headers = { authorization: 'Bearer topsecret' }, raw) =>
-  fetch(`${base}/send`, {
+const AUTH = { authorization: 'Bearer topsecret' };
+const MCP_HEADERS = {
+  'content-type': 'application/json',
+  accept: 'application/json, text/event-stream',
+};
+const INIT = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 't', version: '0' },
+  },
+};
+
+const postMcp = (base, headers = AUTH, body = INIT) =>
+  fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: raw ?? JSON.stringify(body),
+    headers: { ...MCP_HEADERS, ...headers },
+    body: JSON.stringify(body),
   });
 
-test('S3 GET /health returns 200 without auth', async () => {
+async function withClient(base, fn) {
+  const client = new Client({ name: 'test', version: '0.0.0' });
+  const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+    requestInit: { headers: { Authorization: 'Bearer topsecret' } },
+  });
+  await client.connect(transport);
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+test('S1 GET /health returns 200 without auth', async () => {
   const { base } = await boot({ client: makeClient(makeChannel()) });
   const res = await fetch(`${base}/health`);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { status: 'ok' });
 });
 
-test('S2 startServer serves /health on PORT and is idempotent', async () => {
+test('startServer serves /health on PORT and is idempotent', async () => {
   const client = makeClient(makeChannel());
   const logger = makeLogger();
   const a = startServer({ client, env: { PORT: '0' }, logger });
@@ -88,149 +128,161 @@ test('S2 startServer serves /health on PORT and is idempotent', async () => {
   assert.equal(res.status, 200);
 });
 
-test('S2 PORT unset resolves to 3000 without binding it', () => {
+test('PORT unset resolves to 3000 without binding it', () => {
   assert.equal(resolvePort({}), 3000);
   assert.equal(resolvePort({ PORT: '' }), 3000);
   assert.equal(resolvePort({ PORT: '0' }), 0);
   assert.equal(resolvePort({ PORT: '4567' }), 4567);
 });
 
-test('S4 one log line per request with method, path, status, duration; no secret', async () => {
-  const { base, logger } = await boot({ client: makeClient(makeChannel()) });
-  await fetch(`${base}/health`);
-  await post(base, {}, { authorization: 'Bearer wrong' });
-  await fetch(`${base}/nope?token=topsecret`);
-  await post(base, {}, { authorization: 'Bearer topsecret' });
-  assert.equal(logger.lines.length, 4);
-  assert.match(logger.lines[0], /^\[http\] GET \/health 200 \d+ms$/);
-  assert.match(logger.lines[1], /^\[http\] POST \/send 401 \d+ms$/);
-  assert.match(logger.lines[2], /^\[http\] GET \/nope 404 \d+ms$/);
-  assert.ok(!logger.lines.join('\n').includes('topsecret'));
-});
-
-test('S12 S21 valid request sends once with allowedMentions and returns id', async () => {
+test('S2 no/wrong bearer -> 401 and handler not invoked; lowercase bearer accepted', async () => {
   const channel = makeChannel();
-  const { base } = await boot({ client: makeClient(channel) });
-  const res = await post(base, { channelId: 'c1', message: 'hi' });
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { id: '123' });
-  assert.deepEqual(channel.sent, [{ content: 'hi', allowedMentions: { parse: ['users'] } }]);
-});
-
-test('S12 Bearer scheme is matched case-insensitively', async () => {
-  const channel = makeChannel();
-  const { base } = await boot({ client: makeClient(channel) });
-  const res = await post(base, { channelId: 'c1', message: 'hi' }, { authorization: 'bearer topsecret' });
-  assert.equal(res.status, 200);
-});
-
-for (const [name, headers] of [
-  ['missing header', {}],
-  ['non-Bearer scheme', { authorization: 'Basic topsecret' }],
-  ['wrong token', { authorization: 'Bearer nope' }],
-]) {
-  test(`S13 ${name} -> 401, no send`, async () => {
-    const channel = makeChannel();
-    const { base } = await boot({ client: makeClient(channel) });
-    const res = await post(base, { channelId: 'c1', message: 'hi' }, headers);
+  const client = makeClient(channel);
+  const { base } = await boot({ client });
+  for (const headers of [{}, { authorization: 'Basic topsecret' }, { authorization: 'Bearer nope' }]) {
+    const res = await postMcp(base, headers);
     assert.equal(res.status, 401);
-    assert.ok((await res.json()).error);
-    assert.equal(channel.sent.length, 0);
-  });
-}
-
-for (const secret of [undefined, '']) {
-  test(`S14 SEND_API_SECRET ${JSON.stringify(secret)} -> 503, no send`, async () => {
-    const channel = makeChannel();
-    const { base } = await boot({ client: makeClient(channel), env: { SEND_API_SECRET: secret } });
-    const res = await post(base, { channelId: 'c1', message: 'hi' }, { authorization: 'Bearer x' });
-    assert.equal(res.status, 503);
-    assert.ok((await res.json()).error);
-    assert.equal(channel.sent.length, 0);
-  });
-}
-
-for (const [name, body, raw] of [
-  ['missing channelId', { message: 'hi' }],
-  ['empty channelId', { channelId: '', message: 'hi' }],
-  ['non-string channelId', { channelId: 5, message: 'hi' }],
-  ['missing message', { channelId: 'c1' }],
-  ['empty message', { channelId: 'c1', message: '' }],
-  ['non-string message', { channelId: 'c1', message: 5 }],
-  ['malformed JSON', undefined, '{bad'],
-]) {
-  test(`S15 ${name} -> 400 invalid_body, no send`, async () => {
-    const channel = makeChannel();
-    const { base } = await boot({ client: makeClient(channel) });
-    const res = await post(base, body, undefined, raw);
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: 'invalid_body' });
-    assert.equal(channel.sent.length, 0);
-  });
-}
-
-test('S22 2001-char message -> 400 message_too_long; 2000 accepted', async () => {
-  const channel = makeChannel();
-  const { base } = await boot({ client: makeClient(channel) });
-  const long = await post(base, { channelId: 'c1', message: 'a'.repeat(2001) });
-  assert.equal(long.status, 400);
-  assert.deepEqual(await long.json(), { error: 'message_too_long' });
-  const ok = await post(base, { channelId: 'c1', message: 'a'.repeat(2000) });
-  assert.equal(ok.status, 200);
-  assert.equal(channel.sent.length, 1);
-});
-
-test('S16 channels.fetch rejects -> 404', async () => {
-  const client = makeClient(null, {
-    fetchImpl: async () => {
-      throw new Error('Unknown Channel');
-    },
-  });
-  const { base } = await boot({ client });
-  const res = await post(base, { channelId: 'c1', message: 'hi' });
-  assert.equal(res.status, 404);
-});
-
-test('S16 channels.fetch resolves null -> 404', async () => {
-  const { base } = await boot({ client: makeClient(null) });
-  const res = await post(base, { channelId: 'c1', message: 'hi' });
-  assert.equal(res.status, 404);
-});
-
-for (const [name, over] of [
-  ['isTextBased false', { isTextBased: () => false }],
-  ['no send', { send: undefined }],
-]) {
-  test(`S17 ${name} -> 422, no send`, async () => {
-    const channel = makeChannel(over);
-    const { base } = await boot({ client: makeClient(channel) });
-    const res = await post(base, { channelId: 'c1', message: 'hi' });
-    assert.equal(res.status, 422);
-    assert.equal(channel.sent.length, 0);
-  });
-}
-
-test('S18 channel.send rejects -> 502, error logged (message only)', async () => {
-  const channel = makeChannel({
-    send: async () => {
-      throw new Error('Missing Permissions');
-    },
-  });
-  const { base, logger } = await boot({ client: makeClient(channel) });
-  const res = await post(base, { channelId: 'c1', message: 'hi' });
-  assert.equal(res.status, 502);
-  assert.ok((await res.json()).error);
-  const errLine = logger.lines.find((l) => l.includes('Missing Permissions'));
-  assert.ok(errLine);
-  assert.ok(!errLine.includes('topsecret'));
-});
-
-test('Task-only: client not ready -> 503, no fetch/send', async () => {
-  const channel = makeChannel();
-  const client = makeClient(channel, { ready: false });
-  const { base } = await boot({ client });
-  const res = await post(base, { channelId: 'c1', message: 'hi' });
-  assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.ok(body.error);
+    assert.equal(body.jsonrpc, undefined);
+    assert.equal(body.result, undefined);
+  }
   assert.deepEqual(client.fetched, []);
   assert.equal(channel.sent.length, 0);
+  const ok = await postMcp(base, { authorization: 'bearer topsecret' });
+  assert.equal(ok.status, 200);
+  assert.ok((await ok.json()).result.serverInfo);
+});
+
+for (const secret of [undefined, '']) {
+  test(`S3 SEND_API_SECRET ${JSON.stringify(secret)} -> POST /mcp 503 for any headers`, async () => {
+    const { base } = await boot({ client: makeClient(makeChannel()), env: { SEND_API_SECRET: secret } });
+    for (const headers of [AUTH, {}, { authorization: 'Bearer x' }]) {
+      const res = await postMcp(base, headers);
+      assert.equal(res.status, 503);
+      assert.ok((await res.json()).error);
+    }
+  });
+}
+
+test('S4 SDK client initialize + listTools lists exactly the two tools with input schemas', async () => {
+  const { base } = await boot({ client: makeClient(makeChannel()) });
+  await withClient(base, async (client) => {
+    const { tools } = await client.listTools();
+    assert.deepEqual(tools.map((t) => t.name).sort(), ['get_recent_messages', 'send_discord_message']);
+    for (const t of tools) {
+      assert.equal(t.inputSchema.type, 'object');
+      assert.ok('channelId' in t.inputSchema.properties);
+    }
+  });
+});
+
+test('S5 S7 callTool send_discord_message sends once via the fake client', async () => {
+  const channel = makeChannel();
+  const { base } = await boot({ client: makeClient(channel) });
+  await withClient(base, async (client) => {
+    const res = await client.callTool({
+      name: 'send_discord_message',
+      arguments: { channelId: 'c1', message: 'hello ember' },
+    });
+    assert.ok(!res.isError);
+  });
+  assert.equal(channel.sent.length, 1);
+  assert.equal(channel.sent[0].content, 'hello ember');
+  assert.deepEqual(channel.sent[0].allowedMentions, { parse: ['users'] });
+});
+
+test('S18 failing tool call -> isError with {code, message} text over HTTP 200', async () => {
+  const { base } = await boot({ client: makeClient(null) });
+  const res = await postMcp(base, AUTH, {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'send_discord_message', arguments: { channelId: 'c1', message: 'hi' } },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.result.isError, true);
+  const err = JSON.parse(body.result.content[0].text);
+  assert.equal(err.code, 'channel_not_found');
+  assert.equal(typeof err.message, 'string');
+});
+
+test('stateless: two sequential clients work independently', async () => {
+  const channel = makeChannel();
+  const { base } = await boot({ client: makeClient(channel) });
+  for (const message of ['one', 'two']) {
+    await withClient(base, async (client) => {
+      const res = await client.callTool({
+        name: 'send_discord_message',
+        arguments: { channelId: 'c1', message },
+      });
+      assert.ok(!res.isError);
+    });
+  }
+  assert.deepEqual(
+    channel.sent.map((m) => m.content),
+    ['one', 'two'],
+  );
+});
+
+for (const method of ['GET', 'DELETE']) {
+  test(`S13 ${method} /mcp -> 405 JSON-RPC error + Allow: POST; 401 without bearer; 503 secret unset`, async () => {
+    const { base } = await boot({ client: makeClient(makeChannel()) });
+    const res = await fetch(`${base}/mcp`, { method, headers: AUTH });
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get('allow'), 'POST');
+    const body = await res.json();
+    assert.equal(body.jsonrpc, '2.0');
+    assert.ok(body.error);
+    assert.equal(body.id, null);
+    assert.equal((await fetch(`${base}/mcp`, { method })).status, 401);
+    const off = await boot({ client: makeClient(makeChannel()), env: {} });
+    assert.equal((await fetch(`${off.base}/mcp`, { method, headers: AUTH })).status, 503);
+  });
+}
+
+test('S14 POST /send -> 404', async () => {
+  const channel = makeChannel();
+  const { base } = await boot({ client: makeClient(channel) });
+  const res = await fetch(`${base}/send`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...AUTH },
+    body: JSON.stringify({ channelId: 'c1', message: 'hi' }),
+  });
+  assert.equal(res.status, 404);
+  assert.equal(channel.sent.length, 0);
+});
+
+test('malformed JSON on /mcp -> 400 invalid_body (error handler kept)', async () => {
+  const { base } = await boot({ client: makeClient(makeChannel()) });
+  const res = await fetch(`${base}/mcp`, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, ...AUTH },
+    body: '{bad',
+  });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: 'invalid_body' });
+});
+
+test('S15 /mcp log line format; logs never contain secret, Authorization value or message text', async () => {
+  const channel = makeChannel();
+  const { base, logger } = await boot({ client: makeClient(channel) });
+  await postMcp(base, { authorization: 'Bearer wrong' });
+  await withClient(base, (client) =>
+    client.callTool({
+      name: 'send_discord_message',
+      arguments: { channelId: 'c1', message: 'super-private-text' },
+    }),
+  );
+  await fetch(`${base}/nope?token=topsecret`);
+  const mcpLines = logger.lines.filter((l) => l.startsWith('[http] POST /mcp'));
+  assert.ok(mcpLines.length >= 2);
+  for (const l of mcpLines) assert.match(l, /^\[http\] POST \/mcp \d{3} \d+ms$/);
+  assert.match(mcpLines[0], /^\[http\] POST \/mcp 401 /);
+  assert.ok(logger.lines.some((l) => /^\[http\] GET \/nope 404 \d+ms$/.test(l)));
+  const all = logger.lines.join('\n');
+  for (const needle of ['topsecret', 'Bearer', 'super-private-text']) {
+    assert.ok(!all.includes(needle), `logs leaked ${needle}`);
+  }
 });
