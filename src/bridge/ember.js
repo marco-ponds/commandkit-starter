@@ -1,3 +1,5 @@
+import { parseChannelIds } from './channel-ids.js';
+
 const TIMEOUT_MS = 10000;
 const SINGLETON = Symbol.for('ember-bridge.forwarder');
 
@@ -34,12 +36,7 @@ export function createEmberForwarder({ fetch, env, logger = console }) {
         );
     }
 
-    const ids = new Set(
-        (env.CHANNEL_IDS ?? '')
-            .split(',')
-            .map((id) => id.trim())
-            .filter(Boolean),
-    );
+    const ids = parseChannelIds(env.CHANNEL_IDS);
 
     if (enabled && ids.size === 0) {
         logger.warn(
