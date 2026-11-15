@@ -48,16 +48,21 @@ export function createApp({ client, env, logger }) {
   };
 
   app.post('/mcp', requireSecret, requireBearer, express.json(), async (req, res) => {
-    const mcp = buildMcpServer({ client, env, logger });
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    res.on('close', () => {
-      transport.close();
-      mcp.close();
-    });
     try {
+      const mcp = buildMcpServer({ client, env, logger });
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      res.on('close', () => {
+        Promise.allSettled([transport.close(), mcp.close()]).then((results) => {
+          for (const r of results) {
+            if (r.status === 'rejected') {
+              logger.error(`[http] mcp close failed: ${r.reason?.message}`);
+            }
+          }
+        });
+      });
       await mcp.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {

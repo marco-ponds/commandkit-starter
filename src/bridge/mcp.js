@@ -7,38 +7,49 @@ const DEFAULT_LIMIT = 20;
 // Discord API: 50001 Missing Access, 50013 Missing Permissions.
 const PERMISSION_CODES = new Set([50001, 50013]);
 
+const SNOWFLAKE = /^\d{17,20}$/;
+const ID_FORMAT = 'a Discord snowflake (17-20 digits)';
+
+// Strict schemas: used by the handlers' own safeParse so every bad input
+// becomes an invalid_input tool error.
 const sendSchema = z.object({
-    channelId: z
-        .string()
-        .min(1)
-        .describe('ID of the Discord channel or thread to post in.'),
-    message: z
-        .string()
-        .min(1)
-        .max(MAX_MESSAGE_LENGTH)
-        .describe(
-            'Message text in plain Discord markdown, at most 2000 characters. Mention a user as <@userId>; only user mentions ping.',
-        ),
+    channelId: z.string().regex(SNOWFLAKE),
+    message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
 });
 
 const readSchema = z.object({
+    channelId: z.string().regex(SNOWFLAKE),
+    limit: z.number().int().min(1).max(100).optional(),
+});
+
+// Loose shapes registered with the SDK: types and descriptions only, so the
+// SDK does not reject bad values itself and the handlers return invalid_input.
+const sendShape = {
     channelId: z
         .string()
-        .min(1)
+        .describe(`ID of the Discord channel or thread to post in, ${ID_FORMAT}.`),
+    message: z
+        .string()
         .describe(
-            'ID of a watched channel, or of a thread under a watched channel.',
+            'Message text in plain Discord markdown, at most 2000 characters. Mention a user as <@userId>; only user mentions ping.',
+        ),
+};
+
+const readShape = {
+    channelId: z
+        .string()
+        .describe(
+            `ID of a watched channel, or of a thread under a watched channel, ${ID_FORMAT}.`,
         ),
     limit: z
         .number()
-        .int()
-        .min(1)
-        .max(100)
         .optional()
         .describe(`How many messages to return, 1-100 (default ${DEFAULT_LIMIT}).`),
-});
+};
 
 const HINTS = {
-    invalid_input: 'Arguments failed validation; check the tool input schema.',
+    invalid_input:
+        'Arguments failed validation; channelId must be a Discord snowflake (17-20 digits), message 1-2000 characters, limit an integer 1-100.',
     not_ready: 'The Discord client is not ready yet; retry shortly.',
     channel_not_found: 'The channel could not be fetched; check the channel ID.',
     channel_not_allowed:
@@ -170,7 +181,7 @@ export function buildMcpServer({ client, env, logger = console }) {
         {
             description:
                 'Post a message to a Discord channel or thread the bot can see. Plain Discord markdown, at most 2000 characters. Mention users as <@userId>; only user mentions ping (no @everyone or roles). Returns { messageId, url }.',
-            inputSchema: sendSchema.shape,
+            inputSchema: sendShape,
         },
         (args) => sendDiscordMessage(args, deps),
     );
@@ -179,7 +190,7 @@ export function buildMcpServer({ client, env, logger = console }) {
         'get_recent_messages',
         {
             description: `Read recent messages from a watched channel (or a thread under one); other channels are refused. Returns an array of messages, newest first. limit is 1-100, default ${DEFAULT_LIMIT}.`,
-            inputSchema: readSchema.shape,
+            inputSchema: readShape,
         },
         (args) => getRecentMessages(args, deps),
     );
