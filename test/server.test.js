@@ -5,6 +5,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApp, startServer, resolvePort } from '../src/bridge/server.js';
 
+const C1 = '111111111111111111';
+
 function makeLogger() {
   const lines = [];
   const push = (...a) => lines.push(a.map(String).join(' '));
@@ -183,7 +185,7 @@ test('S5 S7 callTool send_discord_message sends once via the fake client', async
   await withClient(base, async (client) => {
     const res = await client.callTool({
       name: 'send_discord_message',
-      arguments: { channelId: 'c1', message: 'hello ember' },
+      arguments: { channelId: C1, message: 'hello ember' },
     });
     assert.ok(!res.isError);
   });
@@ -198,7 +200,7 @@ test('S18 failing tool call -> isError with {code, message} text over HTTP 200',
     jsonrpc: '2.0',
     id: 2,
     method: 'tools/call',
-    params: { name: 'send_discord_message', arguments: { channelId: 'c1', message: 'hi' } },
+    params: { name: 'send_discord_message', arguments: { channelId: C1, message: 'hi' } },
   });
   assert.equal(res.status, 200);
   const body = await res.json();
@@ -215,7 +217,7 @@ test('stateless: two sequential clients work independently', async () => {
     await withClient(base, async (client) => {
       const res = await client.callTool({
         name: 'send_discord_message',
-        arguments: { channelId: 'c1', message },
+        arguments: { channelId: C1, message },
       });
       assert.ok(!res.isError);
     });
@@ -248,7 +250,7 @@ test('S14 POST /send -> 404', async () => {
   const res = await fetch(`${base}/send`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...AUTH },
-    body: JSON.stringify({ channelId: 'c1', message: 'hi' }),
+    body: JSON.stringify({ channelId: C1, message: 'hi' }),
   });
   assert.equal(res.status, 404);
   assert.equal(channel.sent.length, 0);
@@ -268,14 +270,16 @@ test('malformed JSON on /mcp -> 400 invalid_body (error handler kept)', async ()
 test('S15 /mcp log line format; logs never contain secret, Authorization value or message text', async () => {
   const channel = makeChannel();
   const { base, logger } = await boot({ client: makeClient(channel) });
-  await postMcp(base, { authorization: 'Bearer wrong' });
+  await (await postMcp(base, { authorization: 'Bearer wrong' })).text();
   await withClient(base, (client) =>
     client.callTool({
       name: 'send_discord_message',
-      arguments: { channelId: 'c1', message: 'super-private-text' },
+      arguments: { channelId: C1, message: 'super-private-text' },
     }),
   );
-  await fetch(`${base}/nope?token=topsecret`);
+  const nope = await fetch(`${base}/nope?token=topsecret`);
+  await nope.text();
+  await new Promise((r) => setImmediate(r));
   const mcpLines = logger.lines.filter((l) => l.startsWith('[http] POST /mcp'));
   assert.ok(mcpLines.length >= 2);
   for (const l of mcpLines) assert.match(l, /^\[http\] POST \/mcp \d{3} \d+ms$/);
